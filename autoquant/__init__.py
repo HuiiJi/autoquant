@@ -80,6 +80,12 @@ from autoquant.special_models import (
     KVCacheQuantizer,
     get_transformer_qconfig,
     get_smoothquant_qconfig,
+    NAFNet,
+    NAFBlock,
+    LayerNorm2d,
+    create_nafnet_simple,
+    create_nafnet_denoise,
+    create_nafnet_deblur,
 )
 
 __all__ = [
@@ -140,5 +146,11 @@ __all__ = [
     "KVCacheQuantizer",
     "get_transformer_qconfig",
     "get_smoothquant_qconfig",
+    "NAFNet",
+    "NAFBlock",
+    "LayerNorm2d",
+    "create_nafnet_simple",
+    "create_nafnet_denoise",
+    "create_nafnet_deblur",
 ]
 
