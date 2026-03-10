@@ -47,12 +47,14 @@ class FakeQuantize(FakeQuantizeBase):
         if not self.enabled:
             return x
 
-        # 更新observer统计（如果在训练模式）
-        if self.training:
-            self.observer(x)
+        # 更新observer统计（在训练模式或PTQ校准阶段）
+        # 即使在评估模式下，PTQ校准也需要更新observer
+        self.observer(x)
 
         # 如果scale和zero_point未计算，从observer获取
         if self.scale is None or self.zero_point is None:
+            # 只有在训练模式或PTQ阶段才计算参数
+            # 避免在推理时重复计算
             self.calculate_qparams()
 
         # 执行模拟量化
@@ -122,9 +124,11 @@ class LSQFakeQuantize(FakeQuantizeBase):
         if not self.enabled:
             return x
 
-        # 更新observer统计并初始化scale（如果是第一次）
-        if self.training and self.scale is None:
-            self.observer(x)
+        # 更新observer统计（在训练模式或PTQ校准阶段）
+        self.observer(x)
+
+        # 初始化scale（如果是第一次）
+        if self.scale is None:
             self.calculate_qparams()
             # 将scale转换为可学习参数
             self.scale = nn.Parameter(self.scale)
@@ -132,7 +136,6 @@ class LSQFakeQuantize(FakeQuantizeBase):
         # 如果还没有zero_point，先计算
         if self.zero_point is None:
             if self.observer.zero_point is None:
-                self.observer(x)
                 self.calculate_qparams()
             self.zero_point = self.observer.zero_point
 
@@ -191,9 +194,8 @@ class PACTFakeQuantize(FakeQuantizeBase):
         if not self.enabled:
             return x
 
-        # 更新observer统计
-        if self.training:
-            self.observer(x)
+        # 更新observer统计（在训练模式或PTQ校准阶段）
+        self.observer(x)
 
         # 计算scale和zero_point
         if self.scale is None or self.zero_point is None:
