@@ -1,18 +1,44 @@
-# AutoQuant - 专业的AI模型量化工具链条
+<div align="center">
+  <h1>🚀 AutoQuant</h1>
+  <p><strong>专业的 AI 模型量化工具链条</strong></p>
+  
+  <p>
+    <a href="https://github.com/HuiiJi/autoquant">
+      <img src="https://img.shields.io/badge/GitHub-HuiiJi%2Fautoquant-blue?style=flat-square&logo=github" alt="GitHub">
+    </a>
+    <a href="https://github.com/HuiiJi/autoquant/blob/main/LICENSE">
+      <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
+    </a>
+    <a href="https://www.python.org/">
+      <img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python" alt="Python">
+    </a>
+    <a href="https://pytorch.org/">
+      <img src="https://img.shields.io/badge/PyTorch-2.0%2B-red?style=flat-square&logo=pytorch" alt="PyTorch">
+    </a>
+  </p>
+</div>
 
-AutoQuant 是一套专业模型量化工具链条，支持从 PyTorch 模型到 ONNX 模型（包含 QDQ 操作）的完整量化流程。
+---
 
-## 核心特性
+## 📋 简介
 
-- **自定义 Observer**：完全自定义的 Observer 实现，支持多种数据统计策略
-- **自定义 FakeQuant**：完整的 FakeQuantize 实现，支持 STE（直通估计器）、LSQ 等高级量化方法
-- **PTQ/QAT 支持**：同时支持训练后量化（PTQ）和量化感知训练（QAT）
-- **混合精度量化**：结合敏感度分析的混合精度量化
-- **ONNX 导出**：支持导出包含 QDQ 节点的 ONNX 模型，兼容 TensorRT/ONNX Runtime
-- **敏感度分析**：自动分析各层的量化敏感度，辅助混合精度配置
-- **引擎最佳配置**：直接绑定 TensorRT 和 ONNX Runtime 的最佳精度方案
+AutoQuant 是一套专业的模型量化工具链条，参考 MQBench 设计，支持从 PyTorch 模型到 ONNX 模型（包含 QDQ 操作）的完整量化流程。
 
-## 项目结构
+## ✨ 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| 🔧 **自定义 Observer** | 完全自定义的 Observer 实现，支持 MinMax、Histogram 等多种统计策略 |
+| 🎯 **自定义 FakeQuant** | 完整的 FakeQuantize 实现，支持 STE（直通估计器）、LSQ 等高级量化方法 |
+| 📊 **PTQ/QAT 支持** | 同时支持训练后量化（PTQ）和量化感知训练（QAT） |
+| ⚖️ **混合精度量化** | 结合敏感度分析的智能混合精度量化 |
+| 📦 **ONNX 导出** | 支持导出包含 QDQ 节点的 ONNX 模型，兼容 TensorRT/ONNX Runtime |
+| 🔍 **敏感度分析** | 自动分析各层的量化敏感度，辅助混合精度配置 |
+| 🏭 **引擎最佳配置** | 直接绑定 TensorRT 和 ONNX Runtime 的最佳精度方案 |
+
+---
+
+## 📁 项目结构
 
 ```
 autoquant/
@@ -62,7 +88,9 @@ autoquant/
 └── README.md                   # 项目说明
 ```
 
-## 快速开始
+---
+
+## 🚀 快速开始
 
 ### 安装
 
@@ -148,11 +176,13 @@ for epoch in range(num_epochs):
 quantized_model = quantizer.convert()
 ```
 
-## 核心组件说明
+---
+
+## 🎯 核心组件说明
 
 ### QConfig - 引擎最佳配置
 
-直接绑定 TensorRT 和 ONNX Runtime 的最佳精度方案：
+直接绑定 TensorRT 和 ONNX Runtime 的最佳精度方案，无需手动设计：
 
 | 函数 | 说明 |
 |------|------|
@@ -171,42 +201,114 @@ quantized_model = quantizer.convert()
 
 ### Observer
 
-Observer 用于在 PTQ 阶段统计数据分布，计算量化参数。
+Observer 用于在 PTQ 阶段统计数据分布，计算量化参数：
 
-- `MinMaxObserver`：基于最小最大值的统计，简单高效
-- `HistogramObserver`：基于直方图的统计，更准确捕捉数据分布
+| Observer | 说明 |
+|----------|------|
+| `MinMaxObserver` | 基于最小最大值的统计，简单高效 |
+| `HistogramObserver` | 基于直方图的统计，更准确捕捉数据分布 |
 
 ### FakeQuantize
 
-FakeQuantize 用于在 QAT 阶段模拟量化误差，保留梯度传递。
+FakeQuantize 用于在 QAT 阶段模拟量化误差，保留梯度传递：
 
-- `PTQFakeQuantize`：PTQ 专用的 FakeQuantize 实现
-- `LSQFakeQuantize`：基于 LSQ（Learnable Step Size Quantization）的实现
+| FakeQuantize | 说明 |
+|--------------|------|
+| `PTQFakeQuantize` | PTQ 专用的 FakeQuantize 实现 |
+| `LSQFakeQuantize` | 基于 LSQ（Learnable Step Size Quantization）的实现 |
 
-## 推理引擎兼容性
+---
+
+## 🔍 敏感度分析
+
+敏感度分析帮助你识别哪些层对量化最敏感，从而进行智能的混合精度量化：
+
+```python
+from autoquant import SensitivityAnalyzer, get_default_qconfig
+
+analyzer = SensitivityAnalyzer(model, get_default_qconfig())
+sensitivity_scores = analyzer.analyze(dummy_input, calib_data=calib_data)
+
+# 生成报表和图表
+analyzer.save_results("sensitivity_results", top_n_percent=10.0)
+
+# 获取推荐跳过的层
+quantizable_layers, skip_layers = analyzer.get_recommended_layers(top_n_percent=10.0)
+```
+
+**正确的敏感度分析流程**：
+1. 基准 1：原始模型（全浮点）- 最佳情况
+2. 基准 2：全部量化 - 最差情况
+3. 对每个层：只跳过这一层，其他都量化
+4. 敏感度分数 = (跳过该层后的改善) / (全部量化的总误差)
+
+---
+
+## 📦 推理引擎兼容性
 
 导出的 ONNX 模型包含 QDQ（QuantizeLinear/DequantizeLinear）节点，兼容：
 
-- TensorRT
-- ONNX Runtime
-- 其他支持 QDQ 格式的推理引擎
+- ✅ TensorRT
+- ✅ ONNX Runtime
+- ✅ 其他支持 QDQ 格式的推理引擎
 
-## 更新记录
+---
+
+## 📝 更新记录
 
 ### 2026-03-13
-- 重新设计 QConfig，直接绑定 TensorRT 和 ONNX Runtime 最佳方案
-- 优化敏感度分析脚本，使用真正的 PTQ 流程
-- 简化 examples，删除 Transformer 相关
-- 清理项目结构，删除不必要的文件
+- 🚀 **重构项目**：优化敏感度分析，使用真正的 PTQ 流程
+- 🎯 **QConfig 绑定引擎最佳方案**：`get_trt_qconfig()` 和 `get_ort_qconfig()`
+- 🧹 **简化 examples**：只保留 PTQ、QAT、引擎适配、混合精度 4 个示例
+- 📦 **清理项目结构**：删除不必要的文件和 Transformer 相关代码
+- 🐛 **修复 HistogramObserver**：解决重复 register_buffer 问题
 
 ### 2026-03-12
-- 重构项目目录结构，使用 src 目录
-- 完善 PTQ 流程（prepare → calibrate → convert）
+- 📁 **重构项目目录结构**，使用 `src` 目录
+- 🔧 **完善 PTQ 流程**：完整的 `prepare → calibrate → convert` 三步曲
+- ✅ **验证 NAFNet 模型**：PTQ 流程完全通过
 
-## 许可证
+### 2026-03-11
+- 🐛 **修复 PTQ 流程中的形状不匹配错误**
+- 🔧 **修复 SSIM 计算中的 torch.exp 调用错误**
+- ✅ **验证 NAFNet 模型的 PTQ 流程完全通过**
+- 📦 **拆分 observer 模块**，将不同类型的 observer 分离到单独文件中
+
+### 2026-03-10
+- 🔧 **实现 Transformer 模型专用量化策略**
+- 📦 **添加 SmoothQuant 量化方法支持**
+- 🎯 **支持 KV Cache 量化**
+
+### 2026-03-09
+- 🖥️ **添加命令行工具**，支持量化、分析、优化等操作
+
+### 2026-03-08
+- 📊 **添加量化评估模块**，支持 PSNR、SSIM、准确率等评估指标
+
+### 2026-03-07
+- 📦 **完善 ONNX 导出和优化**，支持与 onnxsim 集成
+
+### 2026-03-06
+- 🔍 **实现敏感度分析和混合精度量化**
+
+### 2026-03-05
+- 🎯 **实现 LSQ 和 PACT 量化方法**
+
+### 2026-03-04
+- 🎉 **初始版本**，实现基础的 PTQ 和 QAT 功能
+
+---
+
+## 📄 许可证
 
 MIT License
 
-## 贡献
+## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+---
+
+<div align="center">
+  <p>Made with ❤️ by <a href="https://github.com/HuiiJi">HuiiJi</a></p>
+</div>
