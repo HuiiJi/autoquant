@@ -4,6 +4,26 @@ PTQ FakeQuantize - 后训练量化专用
 
 Author: jihui
 Date: 2026-03-13
+Desc:
+    正确的 PTQ 流程：
+    ┌─────────────────────────────────────────────────────────┐
+    │  阶段 1: CALIBRATION（校准）                               │
+    │  - observer.enabled = True                                 │
+    │  - 只统计 min/max，不计算 qparams，不做 fake quant！       │
+    │  - 这样确保统计的是原始数据分布，不是量化后的数据！         │
+    └─────────────────────────────────────────────────────────┘
+                            ↓
+    ┌─────────────────────────────────────────────────────────┐
+    │  阶段 2: CONVERT（转换）                                  │
+    │  - 调用 calculate_qparams() 计算 scale/zp                │
+    │  - observer.enabled = False                                │
+    └─────────────────────────────────────────────────────────┘
+                            ↓
+    ┌─────────────────────────────────────────────────────────┐
+    │  阶段 3: INFERENCE（推理）                                │
+    │  - 用计算好的 qparams 做 fake quant                       │
+    │  - observer 保持禁用                                       │
+    └─────────────────────────────────────────────────────────┘
 """
 import torch
 import torch.nn as nn
@@ -17,17 +37,9 @@ class PTQFakeQuantize(FakeQuantizeBase):
     """
     PTQFakeQuantize：后训练量化专用
     
-    正确逻辑：
-    1. 校准阶段：
-       - observer 统计数据分布
-       - 每次 forward 都计算 qparams 并进行量化（带噪声）
-       - 这样噪声才能一层层传递，校准更准确
-    2. 推理阶段：
-       - 禁用 observer
-       - 直接用计算好的 qparams 量化
-    
-    特点：
-    - 使用 torch.fake_quantize_per_*_affine，确保 ONNX 导出为 QDQ
+    关键设计原则：
+    1. 校准阶段（observer.enabled=True）：只统计，不量化！
+    2. 推理阶段（observer.enabled=False）：用统计好的 qparams 量化
     """
 
     def __init__(
@@ -58,21 +70,34 @@ class PTQFakeQuantize(FakeQuantizeBase):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """前向传播"""
+        """
+        前向传播
+        
+        ⚠️  注意两个不同的 enabled 属性：
+        1. self.enabled: FakeQuantize 的总开关（禁用后完全不量化，直接返回 x）
+        2. self.observer.enabled: 只控制 observer 是否统计数据
+        
+        关键逻辑：
+        - 如果 observer.enabled=True（校准阶段）：只统计，不量化
+        - 如果 observer.enabled=False（推理阶段）：用统计好的 qparams 进行 fake quant
+        """
+        # 第一重检查：FakeQuantize 总开关（几乎不用，保留为备用）
         if not self.enabled:
             return x
 
-        # 阶段1: 如果 observer 启用，先统计数据
+        # ==========================================
+        # 阶段 1: 校准阶段 - 只统计，不量化！
+        # ==========================================
         if self.observer and self.observer.enabled:
+            # 只统计数据，不做任何量化！
             self.observer(x)
+            # 直接返回原始 x，确保后面层统计的是原始数据！
+            return x
 
-        # 阶段2: 只要有数据，就计算 qparams 并量化
-        # 这样校准阶段也能带量化噪声，噪声一层层传递
-        if self.observer and self.observer.min_val is not None:
-            if self.scale is None or self.zero_point is None:
-                self.calculate_qparams()
-
-        # 如果还没有 qparams（刚开始校准），直接返回
+        # ==========================================
+        # 阶段 2: 推理阶段 - 使用 qparams 做 fake quant
+        # ==========================================
+        # 如果还没有 qparams，直接返回
         if self.scale is None or self.zero_point is None:
             return x
 

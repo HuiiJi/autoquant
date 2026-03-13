@@ -44,6 +44,12 @@ from .quantization.api import (
 from .onnx_export import (
     ONNXExporter,
     ONNXOptimizer,
+    InferenceEngine,
+    EngineConfig,
+    get_engine_config,
+    get_qconfig_for_engine,
+    get_supported_engines,
+    print_engine_info,
 )
 from .utils import (
     QConfig,
@@ -93,6 +99,12 @@ __all__ = [
     "calibrate",
     "ONNXExporter",
     "ONNXOptimizer",
+    "InferenceEngine",
+    "EngineConfig",
+    "get_engine_config",
+    "get_qconfig_for_engine",
+    "get_supported_engines",
+    "print_engine_info",
     "QConfig",
     "get_default_qconfig",
     "get_trt_qconfig",

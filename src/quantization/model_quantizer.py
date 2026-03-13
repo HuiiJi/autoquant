@@ -84,12 +84,17 @@ class QuantizableModule(nn.Module):
         output = self.activation_fake_quant(output)
         return output
     
-    def convert(self):
+    def convert(self, permanently_quantize_weight: bool = False):
         """
         转换为推理模式：
         1. 计算 qparams（只对有统计数据的）
-        2. 永久量化权重（只对特定模块）
+        2. （可选）永久量化权重（默认关闭，因为 QDQ ONNX 不需要）
         3. 禁用 observer
+        
+        Args:
+            permanently_quantize_weight: 是否永久量化 weight（默认False）
+                - False: 保持 weight 为浮点（推荐用于 QDQ ONNX 导出）
+                - True: 永久量化 weight 为 int8（仅用于纯整数推理）
         """
         # 判断是否需要量化 weight
         should_quantize_weight = False
@@ -113,8 +118,9 @@ class QuantizableModule(nn.Module):
         if hasattr(self.activation_fake_quant, 'calculate_qparams'):
             self.activation_fake_quant.calculate_qparams()
         
-        # 只对特定模块永久量化 weight
-        if should_quantize_weight:
+        # （可选）永久量化 weight
+        # ⚠️ 注意：QDQ ONNX 导出不需要这一步！保持 weight 为浮点！
+        if permanently_quantize_weight and should_quantize_weight:
             quant_weight = self.weight_fake_quant(self.module.weight)
             self.module.weight = nn.Parameter(quant_weight)
         
@@ -170,7 +176,6 @@ class ModelQuantizer:
         self._save_original_modules(model)
         self._replace_quantizable_modules(model, skip_layers)
         model = self._insert_quant_dequant_stubs(model)
-        
         self._enable_all_observers(model)
         self.prepared_model = model
         return model
@@ -181,7 +186,7 @@ class ModelQuantizer:
                 module.enable_observer()
             self._enable_all_observers(module)
     
-    def calibrate(self, calib_data, device: Optional[torch.device] = None):
+    def calibrate(self, calib_data, device: Optional[torch.device] = None, verbose: bool = True):
         if self.prepared_model is None:
             raise ValueError("请先调用 prepare() 准备模型")
         
@@ -191,7 +196,8 @@ class ModelQuantizer:
         self.prepared_model.eval()
         self.prepared_model.to(device)
         
-        print("🔧 开始校准...")
+        if verbose:
+            print("🔧 开始校准...")
         
         with torch.no_grad():
             if isinstance(calib_data, torch.utils.data.DataLoader):
@@ -202,27 +208,41 @@ class ModelQuantizer:
                         inputs = batch
                     inputs = inputs.to(device)
                     self.prepared_model(inputs)
-                    if (i + 1) % 10 == 0:
+                    if verbose and (i + 1) % 10 == 0:
                         print(f"  已处理 {i + 1} 批")
             
             elif isinstance(calib_data, list):
                 for i, inputs in enumerate(calib_data):
                     inputs = inputs.to(device)
                     self.prepared_model(inputs)
-                    if (i + 1) % 10 == 0:
+                    if verbose and (i + 1) % 10 == 0:
                         print(f"  已处理 {i + 1} 个样本")
             
             elif isinstance(calib_data, torch.Tensor):
                 inputs = calib_data.to(device)
                 self.prepared_model(inputs)
-                print("  已处理单样本")
+                if verbose:
+                    print("  已处理单样本")
             
             else:
                 raise ValueError(f"不支持的校准数据类型: {type(calib_data)}")
         
-        print("✅ 校准完成！")
+        if verbose:
+            print("✅ 校准完成！")
     
-    def convert(self, inplace: bool = False) -> nn.Module:
+    def convert(self, inplace: bool = False, permanently_quantize_weight: bool = False) -> nn.Module:
+        """
+        转换为推理模式
+        
+        Args:
+            inplace: 是否原地修改
+            permanently_quantize_weight: 是否永久量化 weight（默认False）
+                - False: 保持 weight 为浮点（推荐用于 QDQ ONNX 导出）
+                - True: 永久量化 weight 为 int8（仅用于纯整数推理）
+        
+        Returns:
+            转换后的量化模型
+        """
         if self.prepared_model is None:
             raise ValueError("请先调用 prepare() 和 calibrate()")
         
@@ -231,22 +251,22 @@ class ModelQuantizer:
         else:
             model = self.prepared_model
         
-        self._convert_modules(model)
+        self._convert_modules(model, permanently_quantize_weight)
         return model
     
-    def _convert_modules(self, model: nn.Module, prefix: str = ""):
+    def _convert_modules(self, model: nn.Module, permanently_quantize_weight: bool, prefix: str = ""):
         for name, module in model.named_children():
             if isinstance(module, QuantizableModule):
-                fixed_module = module.convert()
+                fixed_module = module.convert(permanently_quantize_weight=permanently_quantize_weight)
                 setattr(model, name, fixed_module)
             elif isinstance(module, QuantizableModelWrapper):
-                self._convert_modules(module.model, prefix)
+                self._convert_modules(module.model, permanently_quantize_weight, prefix)
             elif isinstance(module, QuantStub):
                 if hasattr(module.quant, 'disable_observer'):
                     module.quant.disable_observer()
             else:
                 full_name = f"{prefix}.{name}" if prefix else name
-                self._convert_modules(module, full_name)
+                self._convert_modules(module, permanently_quantize_weight, full_name)
 
     def _save_original_modules(self, model: nn.Module, prefix: str = ""):
         for name, module in model.named_children():
@@ -257,7 +277,6 @@ class ModelQuantizer:
     def _replace_quantizable_modules(self, model: nn.Module, skip_layers: Optional[Set[str]] = None, prefix: str = ""):
         for name, module in model.named_children():
             full_name = f"{prefix}.{name}" if prefix else name
-
             should_quantize = True
             if skip_layers is not None and full_name in skip_layers:
                 should_quantize = False

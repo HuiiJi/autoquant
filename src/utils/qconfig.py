@@ -16,6 +16,7 @@ from autoquant.observer import (
     ObserverBase,
     MinMaxObserver,
     HistogramObserver,
+    MovingAverageMinMaxObserver,
 )
 from autoquant.fake_quant import (
     FakeQuantizeBase,
@@ -101,14 +102,54 @@ def get_ort_qconfig() -> QConfig:
     return QConfig(activation=activation_fq, weight=weight_fq)
 
 
-def get_default_qconfig() -> QConfig:
+def get_default_qconfig(
+    activation_dtype: QuantDtype = QuantDtype.QUINT8,
+    weight_dtype: QuantDtype = QuantDtype.QINT8,
+    activation_qscheme: QScheme = QScheme.PER_TENSOR_AFFINE,
+    weight_qscheme: QScheme = QScheme.PER_CHANNEL_AFFINE,
+    activation_observer_type: str = "histogram",
+    weight_observer_type: str = "minmax",
+) -> QConfig:
     """
-    获取默认的量化配置（使用 TensorRT 最佳方案）
+    获取默认的量化配置（参数化配置）
+    
+    Args:
+        activation_dtype: 激活值量化数据类型
+        weight_dtype: 权重量化数据类型
+        activation_qscheme: 激活值量化方案
+        weight_qscheme: 权重量化方案
+        activation_observer_type: 激活值observer类型 - "minmax", "histogram", 或 "moving_avg"
+        weight_observer_type: 权重observer类型
     
     Returns:
         QConfig对象
     """
-    return get_trt_qconfig()
+    def get_observer_class(observer_type: str):
+        return {
+            "minmax": MinMaxObserver,
+            "histogram": HistogramObserver,
+            "moving_average": MovingAverageMinMaxObserver,
+        }.get(observer_type.lower(), HistogramObserver)
+    
+    ActivationObserverClass = get_observer_class(activation_observer_type)
+    WeightObserverClass = get_observer_class(weight_observer_type)
+    
+    def activation_fq():
+        observer = ActivationObserverClass(
+            dtype=activation_dtype,
+            qscheme=activation_qscheme,
+        )
+        return PTQFakeQuantize(observer=observer)
+    
+    def weight_fq():
+        observer = WeightObserverClass(
+            dtype=weight_dtype,
+            qscheme=weight_qscheme,
+            ch_axis=0,
+        )
+        return PTQFakeQuantize(observer=observer)
+    
+    return QConfig(activation=activation_fq, weight=weight_fq)
 
 
 def get_lsq_qconfig(

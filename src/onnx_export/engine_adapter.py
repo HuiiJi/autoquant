@@ -2,12 +2,41 @@
 推理引擎适配模块
 为不同的推理引擎（TensorRT、ONNX Runtime、OpenVINO、MNN等）
 提供最佳的QDQ ONNX配置
+
+Author: jihui
+Date: 2026-03-13
+Desc: 
+    各引擎支持的量化方案详细说明：
+    
+    TensorRT:
+    - Activation: 支持 PER_TENSOR_SYMMETRIC / PER_TENSOR_AFFINE
+    - Weight: 支持 PER_CHANNEL_SYMMETRIC (推荐)
+    - 范围: 对称量化 (-128~127), 非对称 (0~255)
+    - 最佳: Weight PER_CHANNEL_SYMMETRIC, Activation PER_TENSOR_AFFINE
+    
+    ONNX Runtime (ORT):
+    - Activation: PER_TENSOR_AFFINE (推荐)
+    - Weight: PER_CHANNEL_AFFINE (推荐)
+    - 范围: 支持非对称 (-128~127 or 0~255)
+    - 最佳: HistogramObserver 获得更好精度
+    
+    OpenVINO:
+    - Activation: PER_TENSOR_AFFINE
+    - Weight: PER_CHANNEL_AFFINE
+    - 最佳: MinMaxObserver (快速)
+    
+    MNN:
+    - Activation: PER_TENSOR_SYMMETRIC
+    - Weight: PER_CHANNEL_SYMMETRIC
+    - 最佳: MovingAverageMinMaxObserver
+    
+    TFLite / CoreML:
+    - 类似 ORT / OpenVINO
 """
 from enum import Enum
 from dataclasses import dataclass
 from typing import Dict, Optional
 from autoquant.core import QuantDtype, QScheme
-from autoquant.utils import QConfig
 
 
 class InferenceEngine(Enum):
@@ -22,7 +51,24 @@ class InferenceEngine(Enum):
 
 @dataclass
 class EngineConfig:
-    """引擎配置"""
+    """
+    引擎配置 - 详细定义每个引擎支持的量化特性
+    
+    字段说明:
+        engine: 引擎枚举
+        activation_dtype: 激活值量化数据类型 (QUINT8/QINT8)
+        weight_dtype: 权重量化数据类型 (QUINT8/QINT8)
+        activation_qscheme: 激活值量化方案
+        weight_qscheme: 权重量化方案
+        activation_observer: 激活值observer类型 ("minmax"/"histogram"/"moving_avg")
+        weight_observer: 权重observer类型
+        supports_per_channel_activation: 是否支持激活值per-channel量化 (大多不支持)
+        supports_per_channel_weight: 是否支持权重per-channel量化 (大多支持)
+        supports_asymmetric_activation: 是否支持激活值非对称量化
+        supports_asymmetric_weight: 是否支持权重非对称量化
+        recommended_qat_method: 推荐的QAT方法 (如果有)
+        note: 额外说明注释
+    """
     engine: InferenceEngine
     activation_dtype: QuantDtype
     weight_dtype: QuantDtype
@@ -35,28 +81,38 @@ class EngineConfig:
     supports_asymmetric_activation: bool
     supports_asymmetric_weight: bool
     recommended_qat_method: Optional[str] = None
+    note: Optional[str] = None
 
 
-# 各引擎的最佳配置
+# 各引擎的最佳配置 - 详细验证过的专业配置
 ENGINE_CONFIGS: Dict[InferenceEngine, EngineConfig] = {
+    
     InferenceEngine.TENSORRT: EngineConfig(
         engine=InferenceEngine.TENSORRT,
         activation_dtype=QuantDtype.QUINT8,
         weight_dtype=QuantDtype.QINT8,
+        # TensorRT 最佳实践：
+        # - Activation: PER_TENSOR_AFFINE (非对称，范围0-255，精度最好)
+        # - Weight: PER_CHANNEL_SYMMETRIC (对称，范围-128~127，性能最佳)
         activation_qscheme=QScheme.PER_TENSOR_AFFINE,
         weight_qscheme=QScheme.PER_CHANNEL_SYMMETRIC,
-        activation_observer="histogram",
+        activation_observer="histogram",  # Histogram量化精度更好
         weight_observer="minmax",
-        supports_per_channel_activation=False,
-        supports_per_channel_weight=True,
-        supports_asymmetric_activation=True,
-        supports_asymmetric_weight=False,
+        supports_per_channel_activation=False,  # TRT不支持Activation per-channel
+        supports_per_channel_weight=True,        # TRT支持Weight per-channel
+        supports_asymmetric_activation=True,     # 支持Activation非对称
+        supports_asymmetric_weight=False,         # 只支持Weight对称 (-128~127)
         recommended_qat_method="lsq",
+        note="TensorRT: 推荐 Weight=PER_CHANNEL_SYMMETRIC, Activation=PER_TENSOR_AFFINE"
     ),
+    
     InferenceEngine.ONNXRUNTIME: EngineConfig(
         engine=InferenceEngine.ONNXRUNTIME,
         activation_dtype=QuantDtype.QUINT8,
         weight_dtype=QuantDtype.QINT8,
+        # ONNX Runtime 最佳实践：
+        # - 都支持 PER_CHANNEL_AFFINE (非对称)
+        # - HistogramObserver 提供最佳精度
         activation_qscheme=QScheme.PER_TENSOR_AFFINE,
         weight_qscheme=QScheme.PER_CHANNEL_AFFINE,
         activation_observer="histogram",
@@ -64,13 +120,17 @@ ENGINE_CONFIGS: Dict[InferenceEngine, EngineConfig] = {
         supports_per_channel_activation=False,
         supports_per_channel_weight=True,
         supports_asymmetric_activation=True,
-        supports_asymmetric_weight=True,
+        supports_asymmetric_weight=True,  # ORT支持Weight非对称
         recommended_qat_method="lsq",
+        note="ONNX Runtime: 支持非对称量化，推荐 HistogramObserver"
     ),
+    
     InferenceEngine.OPENVINO: EngineConfig(
         engine=InferenceEngine.OPENVINO,
         activation_dtype=QuantDtype.QUINT8,
         weight_dtype=QuantDtype.QINT8,
+        # OpenVINO 最佳实践：
+        # - 类似ORT，MinMaxObserver 速度快
         activation_qscheme=QScheme.PER_TENSOR_AFFINE,
         weight_qscheme=QScheme.PER_CHANNEL_AFFINE,
         activation_observer="minmax",
@@ -80,21 +140,28 @@ ENGINE_CONFIGS: Dict[InferenceEngine, EngineConfig] = {
         supports_asymmetric_activation=True,
         supports_asymmetric_weight=True,
         recommended_qat_method=None,
+        note="OpenVINO: 推荐 MinMaxObserver (速度快)"
     ),
+    
     InferenceEngine.MNN: EngineConfig(
         engine=InferenceEngine.MNN,
         activation_dtype=QuantDtype.QUINT8,
         weight_dtype=QuantDtype.QINT8,
+        # MNN 最佳实践：
+        # - 推荐对称量化 PER_TENSOR/PER_CHANNEL_SYMMETRIC
+        # - MovingAverageMinMaxObserver 适合动态场景
         activation_qscheme=QScheme.PER_TENSOR_SYMMETRIC,
         weight_qscheme=QScheme.PER_CHANNEL_SYMMETRIC,
         activation_observer="moving_avg",
         weight_observer="minmax",
         supports_per_channel_activation=False,
         supports_per_channel_weight=True,
-        supports_asymmetric_activation=False,
+        supports_asymmetric_activation=False,  # MNN偏好对称量化
         supports_asymmetric_weight=False,
         recommended_qat_method="lsq",
+        note="MNN: 推荐对称量化 PER_TENSOR/PER_CHANNEL_SYMMETRIC"
     ),
+    
     InferenceEngine.TFLITE: EngineConfig(
         engine=InferenceEngine.TFLITE,
         activation_dtype=QuantDtype.QUINT8,
@@ -108,7 +175,9 @@ ENGINE_CONFIGS: Dict[InferenceEngine, EngineConfig] = {
         supports_asymmetric_activation=True,
         supports_asymmetric_weight=True,
         recommended_qat_method=None,
+        note="TFLite: 类似 ORT/OpenVINO"
     ),
+    
     InferenceEngine.COREML: EngineConfig(
         engine=InferenceEngine.COREML,
         activation_dtype=QuantDtype.QUINT8,
@@ -122,6 +191,7 @@ ENGINE_CONFIGS: Dict[InferenceEngine, EngineConfig] = {
         supports_asymmetric_activation=True,
         supports_asymmetric_weight=True,
         recommended_qat_method=None,
+        note="CoreML: Apple平台，类似 ORT"
     ),
 }
 
@@ -143,12 +213,14 @@ def get_engine_config(engine: str) -> EngineConfig:
         raise ValueError(f"不支持的推理引擎: {engine}. 支持的引擎: {[e.value for e in InferenceEngine]}")
 
 
-def get_qconfig_for_engine(engine: str) -> QConfig:
+def get_qconfig_for_engine(engine: str, use_qat: bool = False, verbose: bool = True) -> 'QConfig':
     """
     获取指定推理引擎的最佳QConfig
     
     Args:
-        engine: 引擎名称
+        engine: 引擎名称 (tensorrt/onnxruntime/openvino/mnn/...)
+        use_qat: 是否使用QAT配置（默认False，使用PTQ配置）
+        verbose: 是否打印详细的量化方案信息（默认True）
     
     Returns:
         QConfig对象
@@ -156,30 +228,35 @@ def get_qconfig_for_engine(engine: str) -> QConfig:
     from autoquant.utils import (
         get_default_qconfig,
         get_lsq_qconfig,
-        get_histogram_qconfig,
     )
     
     config = get_engine_config(engine)
     
-    # 根据推荐选择QAT方法
-    if config.recommended_qat_method == "lsq":
+    # 打印详细的量化方案信息
+    if verbose:
+        print("\n" + "="*80)
+        print(f"📋 量化方案配置 - 引擎: {engine.upper()} {'(QAT模式)' if use_qat else '(PTQ模式)'}")
+        print("="*80)
+        _print_single_engine_info(config)
+        print("="*80 + "\n")
+    
+    # 根据推荐选择QAT方法（仅在use_qat=True时使用）
+    if use_qat and config.recommended_qat_method == "lsq":
         return get_lsq_qconfig(
             activation_dtype=config.activation_dtype,
             weight_dtype=config.weight_dtype,
             activation_qscheme=config.activation_qscheme,
             weight_qscheme=config.weight_qscheme,
         )
-    elif config.activation_observer == "histogram":
-        return get_histogram_qconfig(
-            is_symmetric=not config.supports_asymmetric_activation,
-        )
     else:
+        # PTQ 默认都使用 get_default_qconfig
         return get_default_qconfig(
             activation_dtype=config.activation_dtype,
             weight_dtype=config.weight_dtype,
             activation_qscheme=config.activation_qscheme,
             weight_qscheme=config.weight_qscheme,
-            observer_type=config.activation_observer,
+            activation_observer_type=config.activation_observer,
+            weight_observer_type=config.weight_observer,
         )
 
 
@@ -201,21 +278,18 @@ def print_engine_info(engine: Optional[str] = None):
     else:
         for config in ENGINE_CONFIGS.values():
             _print_single_engine_info(config)
-            print("-" * 60)
+            print("-" * 80)
 
 
 def _print_single_engine_info(config: EngineConfig):
-    """打印单个引擎的信息"""
-    # 将引擎名称转换为首字母大写的形式，如tensorrt -> TensorRT
-    engine_name = config.engine.value.title().replace('_', '')
+    """打印单个引擎的详细信息"""
+    engine_name = config.engine.value.title().replace('_', ' ')
+    print(f"\n{'='*80}")
     print(f"推理引擎: {engine_name}")
+    print(f"{'='*80}")
     print(f"  激活值类型: {config.activation_dtype.name}")
     print(f"  权重类型: {config.weight_dtype.name}")
     print(f"  激活值量化方案: {config.activation_qscheme.name}")
     print(f"  权重量化方案: {config.weight_qscheme.name}")
-    print(f"  支持激活值per-channel: {'是' if config.supports_per_channel_activation else '否'}")
-    print(f"  支持权重per-channel: {'是' if config.supports_per_channel_weight else '否'}")
-    print(f"  支持激活值非对称量化: {'是' if config.supports_asymmetric_activation else '否'}")
-    print(f"  支持权重非对称量化: {'是' if config.supports_asymmetric_weight else '否'}")
-    if config.recommended_qat_method:
-        print(f"  推荐QAT方法: {config.recommended_qat_method.upper()}")
+    print(f"  激活值Observer: {config.activation_observer}")
+    print(f"  权重Observer: {config.weight_observer}")

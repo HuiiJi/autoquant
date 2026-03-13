@@ -1,18 +1,21 @@
 """
 示例 01: NAFNet 敏感度分析 + PTQ 量化
 功能：
-1. 敏感度分析 - 使用真正的 PTQ 流程分析每个层
-2. 智能跳过 - 前 10% 敏感度高的层不量化
-3. 完整 PTQ - prepare → calibrate → convert → ONNX
-4. 报表输出 - 详细的表格报告和图表
+1. 全op敏感度分析 - 使用真正的 PTQ 流程分析每个可量化的层
+2. 智能跳过 - 自动推荐 skip 比例（覆盖95%敏感度）
+3. 引擎适配 - 支持 tensorrt/onnxruntime/openvino/mnn 等
+4. 完整 PTQ - prepare → calibrate → convert → ONNX
+5. 报表输出 - 详细的表格报告和单独的 JPG 图表
 
 Author: jihui
 Date: 2026-03-13
+Desc: 优化版 - 全op分析 + 引擎配置 + 自动推荐skip + 静默打印
 """
 import torch
 import torch.nn as nn
 import sys
 import os
+import argparse
 
 # 添加项目根目录和 src 目录到 Python 路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +29,11 @@ from autoquant import (
     NAFNet_dgf,
     SensitivityAnalyzer
 )
+from autoquant.onnx_export import get_qconfig_for_engine, print_engine_info, get_supported_engines
 
 
 def export_to_onnx(model, dummy_input, filename="quantized_model.onnx"):
-    """导出模型为 ONNX 格式，验证 QDQ 节点"""
-    print(f"\n[9] 导出 ONNX 模型: {filename}")
-    
-    # 使用旧版 ONNX 导出 API，避免 dynamo 相关问题
+    """导出模型为 ONNX 格式"""
     torch.onnx.export(
         model,
         dummy_input,
@@ -45,23 +46,34 @@ def export_to_onnx(model, dummy_input, filename="quantized_model.onnx"):
         dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}},
         dynamo=False
     )
-    
-    print(f"    ✓ ONNX 模型导出成功！")
-    print(f"    ✓ 使用 torch.fake_quantize_per_*_affine 确保 ONNX 导出为 QDQ 格式")
 
 
 def main():
-    print("=" * 80)
-    print("示例 01: NAFNet 敏感度分析 + PTQ 量化 (升级版)")
-    print("=" * 80)
+    parser = argparse.ArgumentParser(description="AutoQuant - NAFNet 全OP敏感度分析 + PTQ")
+    parser.add_argument(
+        "--engine", 
+        type=str, 
+        default="onnxruntime", 
+        help=f"推理引擎选择，支持: {', '.join(get_supported_engines())}"
+    )
+    parser.add_argument(
+        "--list-engines", 
+        action="store_true", 
+        help="列出所有支持的推理引擎及其配置"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.list_engines:
+        print("=" * 80)
+        print("AutoQuant - 支持的推理引擎列表")
+        print("=" * 80)
+        print_engine_info()
+        return
     
     # ========================================================================
     # 步骤 1: 创建 NAFNet 模型和数据
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[1] 创建 NAFNet 模型")
-    print("=" * 80)
-    
     model = NAFNet_dgf(
         img_channel=3,
         width=8,
@@ -71,122 +83,61 @@ def main():
     )
     model.eval()
     dummy_input = torch.randn(1, 3, 64, 64)
-    print(f"    输入形状: {dummy_input.shape}")
-    
-    # 打印模型结构
-    print("\n[2] 模型结构 (部分):")
-    for name, module in list(model.named_children())[:5]:
-        print(f"    {name}: {type(module).__name__}")
-    print("    ... (更多层省略)")
     
     # ========================================================================
-    # 步骤 2: 敏感度分析 - 使用正确的 PTQ 流程！
+    # 步骤 2: 全OP敏感度分析
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[3] 敏感度分析 - 使用正确的 PTQ 流程")
-    print("=" * 80)
-    print("\n    正确流程:")
-    print("      1. 基准1: 原始模型（全浮点）- 最佳情况")
-    print("      2. 基准2: 全部量化 - 最差情况")
-    print("      3. 对每个层: 只跳过这一层，其他都量化")
-    print("      4. 敏感度分数 = (跳过该层后的改善) / (全部量化的总误差)")
-    
-    qconfig = get_default_qconfig()
-    
-    # 创建敏感度分析器
+    print(f"\n[1/6] 开始全OP敏感度分析 (Engine: {args.engine})...")
+    qconfig = get_qconfig_for_engine(args.engine)
     analyzer = SensitivityAnalyzer(model, qconfig)
-    
-    # 准备校准数据
     calib_data = [torch.randn(1, 3, 64, 64) for _ in range(10)]
     
-    # 执行分析 - 为了演示速度，只分析前 10 个层
-    # 实际使用时去掉 only_layers 参数
-    all_layers = analyzer._get_quantizable_layers()
-    analyze_layers = all_layers[:100]  # 只分析前 10 个层做演示
-    print(f"\n    为了演示速度，只分析前 {len(analyze_layers)} 个层")
-    print(f"    实际使用时去掉 only_layers 参数分析所有层")
-    
+    # 分析所有可量化层（全OP分析）
     sensitivity_scores = analyzer.analyze(
         dummy_input,
-        calib_data=calib_data,
-        only_layers=analyze_layers
+        calib_data=calib_data
     )
     
     # ========================================================================
-    # 步骤 3: 生成报表和图表 - 一次性保存所有结果
+    # 步骤 3: 保存完整报表和图表
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[4] 生成并保存敏感度分析结果")
-    print("=" * 80)
-    
-    output_dir = os.path.join(project_root, "sensitivity_results")
-    analyzer.save_results(output_dir, top_n_percent=10.0)
-    
-    # 也打印报告到控制台
-    print("\n" + analyzer.generate_report(top_n_percent=10.0))
+    print("[2/6] 保存敏感度分析结果...")
+    output_dir = os.path.join(project_root, "asset")
+    analyzer.save_results(output_dir)
     
     # ========================================================================
-    # 步骤 4: 获取推荐跳过的层（前 10%）
+    # 步骤 4: 获取自动推荐跳过的层（无需手动设定！）
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[5] 确定要跳过的层（前 10% 敏感度高的层）")
-    print("=" * 80)
+    quantizable_layers, skip_layers, recommendation_info = analyzer.get_recommended_layers()
     
-    quantizable_layers, skip_layers = analyzer.get_recommended_layers(top_n_percent=10.0)
-    
-    print(f"\n    推荐量化的层: {len(quantizable_layers)} 个")
-    print(f"    推荐跳过的层: {len(skip_layers)} 个")
-    
-    if skip_layers:
-        print(f"\n    跳过的层列表:")
-        for layer in skip_layers:
-            print(f"      - {layer}")
+    # 打印自动推荐信息
+    if recommendation_info:
+        print(f"\n    🤖 自动推荐结果:")
+        print(f"       方法: {recommendation_info.get('description', 'auto')}")
+        print(f"       Skip层数: {recommendation_info.get('skip_count', 0)}")
+        print(f"       Skip占比: {recommendation_info.get('skip_percent', 0):.1f}%")
+        print(f"       覆盖敏感度: {recommendation_info.get('coverage', 0):.1%}")
+        
+        alternatives = recommendation_info.get('alternatives', {})
     
     # ========================================================================
-    # 步骤 5: 准备量化模型 - 跳过敏感度高的层
+    # 步骤 5: PTQ 量化
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[6] 准备量化模型 (跳过敏感度高的层)")
-    print("=" * 80)
-    
+    print("\n[3/6] 准备量化模型...")
     quantizer = ModelQuantizer(model, qconfig)
     prepared_model = quantizer.prepare(skip_layers=set(skip_layers))
-    print(f"    ✓ 模型准备完成")
-    print(f"    ✓ 跳过了 {len(skip_layers)} 个敏感度高的层")
     
-    # ========================================================================
-    # 步骤 6: 校准
-    # ========================================================================
-    print("\n" + "=" * 80)
-    print("[7] 校准模型")
-    print("=" * 80)
-    
+    print("[4/6] 校准中...")
     calib_data = [torch.randn(1, 3, 64, 64) for _ in range(50)]
     quantizer.calibrate(calib_data)
-    print("    ✓ 校准完成")
     
-    # ========================================================================
-    # 步骤 7: 转换为量化模型
-    # ========================================================================
-    print("\n" + "=" * 80)
-    print("[8] 转换为量化模型")
-    print("=" * 80)
-    
-    print("    作用:")
-    print("      1. 计算所有模块的 qparams (scale/zero_point)")
-    print("      2. 永久量化权重（不只是临时量化）")
-    print("      3. 禁用 observer，停止统计")
-    
+    print("[5/6] 转换为量化模型...")
     quantized_model = quantizer.convert()
-    print("    ✓ 转换完成")
     
     # ========================================================================
-    # 步骤 8: 验证
+    # 步骤 6: 验证并导出
     # ========================================================================
-    print("\n" + "=" * 80)
-    print("[9] 验证量化模型")
-    print("=" * 80)
-    
+    print("[6/6] 验证量化结果...")
     with torch.no_grad():
         original_output = model(dummy_input)
         quantized_output = quantized_model(dummy_input)
@@ -199,29 +150,23 @@ def main():
         raise ValueError(f"量化输出形状 {quantized_output.shape} 与原始输出形状 {original_output.shape} 不匹配")
     
     mse = torch.nn.functional.mse_loss(original_output, quantized_output).item()
-    print(f"    输出 MSE: {mse:.6f}")
     
-    # ========================================================================
-    # 步骤 9: 导出 ONNX
-    # ========================================================================
-    onnx_path = os.path.join(project_root, "quantized_model.onnx")
+    # 导出 ONNX
+    onnx_path = os.path.join(project_root, f"quantized_model_{args.engine}.onnx")
     export_to_onnx(quantized_model, dummy_input, onnx_path)
     
     # ========================================================================
-    # 总结
+    # 简要总结
     # ========================================================================
     print("\n" + "=" * 80)
-    print("总结")
+    print("完成！")
     print("=" * 80)
-    print(f"  ✓ 敏感度分析完成（使用正确的 PTQ 流程）")
-    print(f"  ✓ 跳过敏感度高的层: {len(skip_layers)} 个")
-    print(f"  ✓ 量化层: {len(quantizable_layers)} 个")
-    print(f"  ✓ 完整 PTQ 流程完成")
-    print(f"  ✓ 输出 MSE: {mse:.6f}")
-    print(f"  ✓ 结果已保存到: {output_dir}")
-    print(f"  ✓ ONNX 模型已导出: {onnx_path}")
-    print("=" * 80)
-    print("示例 01 完成！")
+    print(f"  推理引擎: {args.engine}")
+    print(f"  分析层总数: {len(sensitivity_scores)}")
+    print(f"  跳过敏感层: {len(skip_layers)} (自动推荐)")
+    print(f"  输出 MSE: {mse:.6f}")
+    print(f"  报表目录: {output_dir}")
+    print(f"  ONNX模型: {onnx_path}")
     print("=" * 80)
 
 
